@@ -2,7 +2,7 @@ use vulkano::{
     VulkanLibrary,
     instance::{Instance, InstanceCreateInfo},
     device::{Device, DeviceCreateInfo, Features, QueueCreateInfo},
-    buffer::{BufferUsage, CpuAccessibleBuffer},
+    buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo},
     sync::{self, GpuFuture}
 };
@@ -63,50 +63,28 @@ fn main() {
     // Since we only actually requested/need one queue, isolate it
     let queue = queues.next().unwrap();
 
-    // Create a source buffer filled with CPU-provided data
-    let source_data = Matrix4x4::identity();
-    let source_buffer = CpuAccessibleBuffer::from_data(
-        device.clone(), // Since device is an Arc<Device>, this is cheap
-        BufferUsage { transfer_src: true, ..Default::default() },
-        false,
-        source_data,
-    ).unwrap();
+    let data_iter = 0..65536;
+    let data_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage {
+        storage_buffer: true,
+        ..Default::default()
+    }, false, data_iter).unwrap();
+}
 
-    // Create destination buffer
-    let destination_data = Matrix4x4::default();
-    let destination_buffer = CpuAccessibleBuffer::from_data(
-        device.clone(),
-        BufferUsage { transfer_dst: true, ..Default::default() },
-        false,
-        destination_data
-    ).unwrap();
+mod cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        src: "
+#version 450
 
-    // Now we need to create a command buffer to tell the GPU what to do
-    // Create a command buffer builder
-    let mut command_builder = AutoCommandBufferBuilder::primary(
-        device.clone(),
-        queue_family_index, // The queue to submit the command buffer to
-        CommandBufferUsage::OneTimeSubmit
-    ).unwrap();
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-    // Populate the command buffer with a command to copy the buffer data over
-    command_builder.copy_buffer(CopyBufferInfo::buffers(
-        source_buffer.clone(),
-        destination_buffer.clone()
-    )).unwrap();
+layout(set = 0, binding = 0) buffer Data {
+    uint data[];
+} buf;
 
-    // Build the actual command buffer now
-    let command_buffer = command_builder.build().unwrap();
-
-    // Finally: submit the command buffer to the GPU for immediate execution
-    let future = sync::now(device.clone()) // Make a "future" object to manage resources
-        .then_execute(queue.clone(), command_buffer) // Queue up the commands
-        .unwrap()
-        .then_signal_fence_and_flush() // Set up fence, then flush
-        .unwrap();
-
-    future.wait(None).unwrap(); // Wait for fence so the next .read() won't fail
-
-    println!("Source buffer: {:?}", source_buffer.read().unwrap().clone());
-    println!("Destination buffer: {:?}", destination_buffer.read().unwrap().clone());
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    buf.data[idx] *= 12;
+}"
+    }
 }
